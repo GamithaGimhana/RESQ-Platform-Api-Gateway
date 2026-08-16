@@ -1,0 +1,76 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  main:
+    web-application-type: reactive
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: incident-service-route
+          uri: ${INCIDENT_SERVICE_URL:lb://incident-service}
+          predicates:
+            - Path=/api/v1/incidents/**
+          filters:
+            - name: AuthenticationFilter
+
+        - id: response-service-route
+          uri: ${RESPONSE_SERVICE_URL:lb://response-service}
+          predicates:
+            - Path=/api/v1/response/**
+          filters:
+            - name: AuthenticationFilter
+
+        - id: evidence-service-route
+          uri: ${EVIDENCE_SERVICE_URL:lb://evidence-service}
+          predicates:
+            - Path=/api/v1/evidence/**
+          filters:
+            - name: AuthenticationFilter
+
+      globalcors:
+        corsConfigurations:
+          '[/**]':
+            allowedOrigins: "*"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+            allowedHeaders: "*"
+            exposedHeaders:
+              - Authorization
+              - X-Trace-Id
+              - X-Correlation-Id
+              - Content-Disposition
+
+eureka:
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${random.value}
+  client:
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+    register-with-eureka: ${EUREKA_REGISTER:true}
+    fetch-registry: ${EUREKA_FETCH:true}
+
+jwt:
+  secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+  expiration: 86400000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
