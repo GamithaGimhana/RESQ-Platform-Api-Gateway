@@ -35,6 +35,7 @@ public class AuthenticationFilter extends AbstractGatewayFilterFactory<Authentic
     private static final List<String> OPEN_ENDPOINTS = Arrays.asList(
             "/api/v1/auth/login",
             "/api/v1/auth/demo-tokens",
+            "/api/v1/evidence/local",
             "/actuator/health",
             "/actuator/info"
     );
