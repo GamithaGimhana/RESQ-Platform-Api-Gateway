@@ -10,6 +10,7 @@ public class AuthResponse {
     private String fullName;
     private long expiresInMs;
     private Date issuedAt;
+    private UserResponse user;
 
     public AuthResponse() {
     }
@@ -19,6 +20,16 @@ public class AuthResponse {
         this.username = username;
         this.role = role;
         this.fullName = fullName;
+        this.expiresInMs = expiresInMs;
+        this.issuedAt = new Date();
+    }
+
+    public AuthResponse(String token, UserResponse user, long expiresInMs) {
+        this.token = token;
+        this.username = user.getEmail();
+        this.role = user.getRole().name();
+        this.fullName = user.getName();
+        this.user = user;
         this.expiresInMs = expiresInMs;
         this.issuedAt = new Date();
     }
@@ -77,5 +88,13 @@ public class AuthResponse {
 
     public void setIssuedAt(Date issuedAt) {
         this.issuedAt = issuedAt;
+    }
+
+    public UserResponse getUser() {
+        return user;
+    }
+
+    public void setUser(UserResponse user) {
+        this.user = user;
     }
 }

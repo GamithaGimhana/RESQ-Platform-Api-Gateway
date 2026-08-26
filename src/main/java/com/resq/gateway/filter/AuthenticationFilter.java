@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.resq.gateway.config.JwtUtil;
 import com.resq.gateway.dto.ErrorResponse;
+import com.resq.gateway.model.Role;
 import io.jsonwebtoken.Claims;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +35,7 @@ public class AuthenticationFilter extends AbstractGatewayFilterFactory<Authentic
 
     private static final List<String> OPEN_ENDPOINTS = Arrays.asList(
             "/api/v1/auth/login",
+            "/api/v1/auth/register",
             "/api/v1/auth/demo-tokens",
             "/api/v1/evidence/local",
             "/actuator/health",
@@ -56,22 +58,28 @@ public class AuthenticationFilter extends AbstractGatewayFilterFactory<Authentic
             String path = request.getURI().getPath();
             HttpMethod method = request.getMethod();
 
-            // Allow preflight CORS requests
+            // 1. Allow preflight CORS requests
             if (method == HttpMethod.OPTIONS) {
                 return chain.filter(exchange);
             }
 
-            // Allow open endpoints
+            // 2. Allow open endpoints
             for (String openEndpoint : OPEN_ENDPOINTS) {
                 if (path.startsWith(openEndpoint)) {
-                    return chain.filter(exchange);
+                    // Strip any spoofed headers even on open endpoints
+                    ServerHttpRequest sanitizedRequest = request.mutate()
+                            .headers(h -> {
+                                h.remove("X-User-Id");
+                                h.remove("X-User-Role");
+                                h.remove("X-User-FullName");
+                            })
+                            .build();
+                    return chain.filter(exchange.mutate().request(sanitizedRequest).build());
                 }
             }
 
-            // Extract Authorization header
+            // 3. Header Spoofing Protection: Verify and extract Authorization header
             if (!request.getHeaders().containsKey(HttpHeaders.AUTHORIZATION)) {
-                // Allow unauthenticated GET for basic incident queries or report creation if configured,
-                // but enforce auth on protected operations
                 return onError(exchange, HttpStatus.UNAUTHORIZED, "Missing Authorization Header", path);
             }
 
@@ -86,66 +94,158 @@ public class AuthenticationFilter extends AbstractGatewayFilterFactory<Authentic
             }
 
             Claims claims;
+            Role role;
+            String username;
+            String fullName;
             try {
                 claims = jwtUtil.extractAllClaims(token);
+                role = jwtUtil.extractRole(token);
+                username = jwtUtil.extractUserId(token);
+                fullName = claims.get("fullName", String.class) != null ? claims.get("fullName", String.class) : username;
             } catch (Exception e) {
-                return onError(exchange, HttpStatus.UNAUTHORIZED, "Failed to parse JWT Token claims", path);
+                return onError(exchange, HttpStatus.UNAUTHORIZED, "Failed to parse JWT Token claims: " + e.getMessage(), path);
             }
 
-            String username = claims.getSubject();
-            String role = claims.get("role", String.class);
-            if (role == null) {
-                role = "REPORTER";
-            }
-
-            // Role-based Access Control (RBAC) validations
+            // 4. Role-based Access Control (RBAC) validations
             if (!isAuthorized(path, method, role)) {
+                log.warn("Access Denied: User [{}] with Role [{}] attempted unauthorized [{}] on [{}]", username, role, method, path);
                 return onError(exchange, HttpStatus.FORBIDDEN, "Insufficient permissions for role: " + role, path);
             }
 
-            // Enrich request with verified identity headers
+            // 5. Header Spoofing Protection: Strip any client headers, inject verified identity headers
             ServerHttpRequest mutatedRequest = request.mutate()
+                    .headers(httpHeaders -> {
+                        httpHeaders.remove("X-User-Id");
+                        httpHeaders.remove("X-User-Role");
+                        httpHeaders.remove("X-User-FullName");
+                    })
                     .header("X-User-Id", username)
-                    .header("X-User-Role", role)
-                    .header("X-User-FullName", claims.get("fullName", String.class) != null ? claims.get("fullName", String.class) : username)
+                    .header("X-User-Role", role.name())
+                    .header("X-User-FullName", fullName)
                     .build();
 
             return chain.filter(exchange.mutate().request(mutatedRequest).build());
         };
     }
 
-    private boolean isAuthorized(String path, HttpMethod method, String role) {
-        if ("ADMIN".equalsIgnoreCase(role)) {
-            return true;
-        }
-
-        // DISPATCHER: Full access to incidents, response teams, allocations, evidence viewing
-        if ("DISPATCHER".equalsIgnoreCase(role)) {
-            return true;
-        }
-
-        // RESPONDER: Can view incidents, update incident status, view/manage response, upload evidence
-        if ("RESPONDER".equalsIgnoreCase(role)) {
-            if (path.startsWith("/api/v1/incidents")) {
-                return method == HttpMethod.GET || method == HttpMethod.PATCH || method == HttpMethod.PUT;
-            }
-            if (path.startsWith("/api/v1/response")) {
-                return true;
-            }
-            if (path.startsWith("/api/v1/evidence")) {
-                return true;
-            }
+    public boolean isAuthorized(String path, HttpMethod method, Role role) {
+        if (role == null) {
             return false;
         }
 
-        // REPORTER: Can create/report incidents and view incident list/details
-        if ("REPORTER".equalsIgnoreCase(role)) {
+        // SUPER_ADMIN: Full access across entire platform
+        if (role == Role.SUPER_ADMIN) {
+            return true;
+        }
+
+        // ADMIN: Operational administrator
+        if (role == Role.ADMIN) {
+            // ADMIN has full access to incidents, response, evidence, operational users, audit
+            return true;
+        }
+
+        // DISPATCHER: Emergency dispatch & resource coordination
+        if (role == Role.DISPATCHER) {
+            // User management: NO access
+            if (path.startsWith("/api/v1/users")) {
+                return false;
+            }
+
+            // Incidents
             if (path.startsWith("/api/v1/incidents")) {
+                // Cannot overwrite incident metadata via PUT
+                if (method == HttpMethod.PUT) {
+                    return false;
+                }
+                // Status operational containment is for responders/admins
+                if (path.matches("^/api/v1/incidents/\\d+/status$")) {
+                    return false;
+                }
+                // Allowed: GET (all), POST /incidents (create), POST /incidents/{id}/assignments (assign squad)
+                return true;
+            }
+
+            // Response teams & resources
+            if (path.startsWith("/api/v1/response")) {
+                return true; // Dispatcher manages teams, resources, allocations
+            }
+
+            // Evidence
+            if (path.startsWith("/api/v1/evidence")) {
+                // Dispatcher cannot delete evidence or access audit events
+                if (path.startsWith("/api/v1/evidence/audit") || method == HttpMethod.DELETE || method == HttpMethod.POST) {
+                    return false;
+                }
+                return method == HttpMethod.GET;
+            }
+
+            return false;
+        }
+
+        // RESPONDER: Field rescue execution
+        if (role == Role.RESPONDER) {
+            // User management: NO access
+            if (path.startsWith("/api/v1/users")) {
+                return false;
+            }
+
+            // Incidents
+            if (path.startsWith("/api/v1/incidents")) {
+                // Cannot create incidents, assign squads, or PUT incident
+                if (path.matches("^/api/v1/incidents/\\d+/assignments$") || method == HttpMethod.PUT) {
+                    return false;
+                }
+                // Allowed: GET (view incidents) and PATCH /incidents/{id}/status (update containment status)
+                return method == HttpMethod.GET || (method == HttpMethod.PATCH && path.matches("^/api/v1/incidents/\\d+/status$"));
+            }
+
+            // Response
+            if (path.startsWith("/api/v1/response")) {
+                // Read-only access to view teams, resources, allocations
+                return method == HttpMethod.GET;
+            }
+
+            // Evidence
+            if (path.startsWith("/api/v1/evidence")) {
+                if (path.startsWith("/api/v1/evidence/audit") || method == HttpMethod.DELETE) {
+                    return false;
+                }
+                // Can upload evidence and view evidence
+                return method == HttpMethod.GET || (method == HttpMethod.POST && path.startsWith("/api/v1/evidence/upload"));
+            }
+
+            return false;
+        }
+
+        // REPORTER: Public disaster reporting & tracking
+        if (role == Role.REPORTER) {
+            // User management: NO access
+            if (path.startsWith("/api/v1/users")) {
+                return false;
+            }
+
+            // Incidents
+            if (path.startsWith("/api/v1/incidents")) {
+                // Cannot assign teams, modify status, or PUT incident
+                if (path.matches("^/api/v1/incidents/\\d+/assignments$") ||
+                        path.matches("^/api/v1/incidents/\\d+/status$") ||
+                        method == HttpMethod.PUT || method == HttpMethod.PATCH || method == HttpMethod.DELETE) {
+                    return false;
+                }
+                // Can create incident (POST) or view incidents (GET)
                 return method == HttpMethod.POST || method == HttpMethod.GET;
             }
-            if (path.startsWith("/api/v1/evidence")) {
-                return method == HttpMethod.GET || method == HttpMethod.POST;
+
+            // Response teams/resources: NO access
+            if (path.startsWith("/api/v1/response")) {
+                return false;
             }
+
+            // Evidence: Only public local stream
+            if (path.startsWith("/api/v1/evidence")) {
+                return path.startsWith("/api/v1/evidence/local");
+            }
+
             return false;
         }
 

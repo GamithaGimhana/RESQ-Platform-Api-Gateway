@@ -1,5 +1,6 @@
 package com.resq.gateway.config;
 
+import com.resq.gateway.model.Role;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.Jwts;
@@ -34,8 +35,10 @@ public class JwtUtil {
         return Keys.hmacShaKeyFor(keyBytes);
     }
 
-    public String generateToken(String username, String role, String fullName) {
+    public String generateToken(String userId, String email, String role, String fullName) {
         Map<String, Object> claims = new HashMap<>();
+        claims.put("userId", userId);
+        claims.put("email", email);
         claims.put("role", role);
         claims.put("fullName", fullName);
 
@@ -44,11 +47,15 @@ public class JwtUtil {
 
         return Jwts.builder()
                 .claims(claims)
-                .subject(username)
+                .subject(userId != null ? userId : email)
                 .issuedAt(now)
                 .expiration(expiryDate)
                 .signWith(getSigningKey())
                 .compact();
+    }
+
+    public String generateToken(String username, String role, String fullName) {
+        return generateToken(username, username, role, fullName);
     }
 
     public Claims extractAllClaims(String token) {
@@ -59,21 +66,47 @@ public class JwtUtil {
                 .getPayload();
     }
 
-    public String extractUsername(String token) {
-        return extractAllClaims(token).getSubject();
+    public String extractUserId(String token) {
+        Claims claims = extractAllClaims(token);
+        String userId = claims.get("userId", String.class);
+        return userId != null ? userId : claims.getSubject();
     }
 
-    public String extractRole(String token) {
-        Object role = extractAllClaims(token).get("role");
-        return role != null ? role.toString() : "REPORTER";
+    public String extractUsername(String token) {
+        return extractUserId(token);
+    }
+
+    public String extractEmail(String token) {
+        Claims claims = extractAllClaims(token);
+        String email = claims.get("email", String.class);
+        return email != null ? email : claims.getSubject();
+    }
+
+    public Role extractRole(String token) {
+        Claims claims = extractAllClaims(token);
+        Object roleObj = claims.get("role");
+        if (roleObj == null) {
+            throw new IllegalArgumentException("JWT missing role claim");
+        }
+        return Role.fromString(roleObj.toString());
     }
 
     public boolean validateToken(String token) {
+        if (token == null || token.trim().isEmpty()) {
+            return false;
+        }
         try {
-            Jwts.parser()
+            Claims claims = Jwts.parser()
                     .verifyWith(getSigningKey())
                     .build()
-                    .parseSignedClaims(token);
+                    .parseSignedClaims(token)
+                    .getPayload();
+
+            // Validate that required claims exist
+            if (claims.getSubject() == null || claims.get("role") == null) {
+                log.warn("JWT missing mandatory claims (sub or role)");
+                return false;
+            }
             return true;
         } catch (SecurityException | MalformedJwtException e) {
             log.error("Invalid JWT signature/token format: {}", e.getMessage());
@@ -82,7 +115,9 @@ public class JwtUtil {
         } catch (UnsupportedJwtException e) {
             log.error("Unsupported JWT token: {}", e.getMessage());
         } catch (IllegalArgumentException e) {
-            log.error("JWT claims string is empty: {}", e.getMessage());
+            log.error("JWT claims string is empty or invalid: {}", e.getMessage());
+        } catch (Exception e) {
+            log.error("JWT validation error: {}", e.getMessage());
         }
         return false;
     }

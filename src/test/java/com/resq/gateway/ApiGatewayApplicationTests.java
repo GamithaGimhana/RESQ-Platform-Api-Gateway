@@ -34,6 +34,6 @@ class ApiGatewayApplicationTests {
         assertTrue(jwtUtil.validateToken(token));
 
         assertEquals(username, jwtUtil.extractUsername(token));
-        assertEquals(role, jwtUtil.extractRole(token));
+        assertEquals(com.resq.gateway.model.Role.DISPATCHER, jwtUtil.extractRole(token));
     }
 }
