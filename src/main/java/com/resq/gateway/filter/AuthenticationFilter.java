@@ -38,6 +38,8 @@ public class AuthenticationFilter extends AbstractGatewayFilterFactory<Authentic
             "/api/v1/auth/register",
             "/api/v1/auth/demo-tokens",
             "/api/v1/evidence/local",
+            "/api/v1/evidence/file",
+            "/api/v1/evidence/download",
             "/actuator/health",
             "/actuator/info"
     );
@@ -241,9 +243,12 @@ public class AuthenticationFilter extends AbstractGatewayFilterFactory<Authentic
                 return false;
             }
 
-            // Evidence: Only public local stream
+            // Evidence: Can upload disaster evidence and view incident media
             if (path.startsWith("/api/v1/evidence")) {
-                return path.startsWith("/api/v1/evidence/local");
+                if (path.startsWith("/api/v1/evidence/audit") || method == HttpMethod.DELETE) {
+                    return false;
+                }
+                return method == HttpMethod.GET || (method == HttpMethod.POST && path.startsWith("/api/v1/evidence/upload"));
             }
 
             return false;
