@@ -66,6 +66,9 @@ public class AuthenticationFilter extends AbstractGatewayFilterFactory<Authentic
             }
 
             // 2. Allow open endpoints
+            if ("/".equals(path) || path.isEmpty()) {
+                return chain.filter(exchange);
+            }
             for (String openEndpoint : OPEN_ENDPOINTS) {
                 if (path.startsWith(openEndpoint)) {
                     // Strip any spoofed headers even on open endpoints
