@@ -23,10 +23,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@SpringBootTest(properties = {
+@SpringBootTest(classes = com.resq.gateway.ApiGatewayApplication.class, properties = {
     "eureka.client.register-with-eureka=false",
     "eureka.client.fetch-registry=false"
 })
+
 public class ApiGatewaySecurityTests {
 
     @Autowired
